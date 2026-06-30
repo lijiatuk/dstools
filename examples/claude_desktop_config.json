@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "dstools": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/dstools",
+        "dstools",
+        "serve"
+      ],
+      "env": {
+        "DEEPSEEK_API_KEY": "sk-your-deepseek-key",
+        "DEEPSEEK_MODEL": "deepseek-v4-pro",
+        "DEEPSEEK_FAST_MODEL": "deepseek-v4-flash",
+        "VISION_BASE_URL": "https://api.openai.com/v1",
+        "VISION_API_KEY": "sk-your-vision-key",
+        "VISION_MODEL": "gpt-4o-mini",
+        "SEARCH_PROVIDER": "duckduckgo",
+        "LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}

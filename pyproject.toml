@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dstools"
+version = "0.1.0"
+description = "DeepSeek (DSv4) MCP toolkit: image understanding + deep research capabilities for DeepSeek models."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "dstools contributors" }]
+keywords = ["deepseek", "mcp", "model-context-protocol", "vision", "deep-research", "llm-tools"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # Pin <2: v2 is alpha/pre-release with a breaking API (MCPServer). v1.x is the
+    # only stable, production-recommended line. See upstream README.
+    "mcp>=1.2.0,<2",
+    "openai>=1.50.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "beautifulsoup4>=4.12.0",
+    "html2text>=2024.2.26",
+    "pillow>=10.0.0",
+    "rich>=13.0.0",
+    "anyio>=4.3.0",
+    "tenacity>=8.2.0",
+]
+
+[project.optional-dependencies]
+# Optional web-search backends. The server works without these via the built-in
+# Jina AI provider, but Tavily / DuckDuckGo give better results.
+tavily = ["tavily-python>=0.5.0"]
+ddg = ["ddgs>=9.0.0"]
+# Optional OCR backend for the image tools (text-in-image extraction).
+ocr = ["pytesseract>=0.3.10"]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "respx>=0.5.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+dstools = "dstools.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/your-org/dstools"
+Issues = "https://github.com/your-org/dstools/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dstools"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning:.*",
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_unused_ignores = true
+ignore_missing_imports = true
