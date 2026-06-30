@@ -1,13 +1,22 @@
 """Deep-research tool: a multi-step, citation-backed research pipeline.
 
-Pipeline (uses DeepSeek-V4 as the planning + synthesis brain):
+Pipeline (DeepSeek-V4 is the planning + extraction + synthesis brain):
 
-1. **Plan**  — V4-flash decomposes the question into `breadth` search queries.
-2. **Search** — run each query (concurrent) via the configured search provider.
-3. **Fetch**  — fetch & extract the top `max_sources` pages (concurrent).
+1. **Plan**    — V4-flash decomposes the question into `breadth` search queries.
+2. **Round loop** (`depth` rounds):
+   a. **Search** each query (concurrent) via the configured search provider.
+   b. **Fetch**  new pages (concurrent) and extract text.
+   c. **Refine** — between rounds, V4-flash reads findings-so-far and generates
+      next-round queries targeting uncovered facets (STORM-style).
+3. **Rerank**  — V4-flash extracts the passages most relevant to the question
+   from each fetched page (always-on; quality over the raw "stuff everything"
+   approach).
 4. **Synthesize** — V4-pro writes a structured, citation-backed report from the
-   gathered context (thinking mode on for hard synthesis; stable system prompt
-   for DeepSeek's automatic prefix caching).
+   reranked context (thinking on; stable system prompts for DeepSeek's
+   automatic prefix caching).
+
+Per-step models are configurable (``RESEARCH_{PLAN,REFINE,RERANK,SYNTH}_MODEL``);
+defaults are flash for the light steps and pro for synthesis.
 
 The granular tools (``web_search``, ``fetch_page``, ``analyze_image``) let a host
 agent run its own agentic loop; ``deep_research`` is the one-shot orchestrator.
@@ -17,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -35,11 +45,22 @@ _logger = get_logger("tools.research")
 
 ProgressFn = Callable[[str, str], Awaitable[None] | None]
 
-# Stable system prompts (kept constant across calls so DeepSeek's automatic
-# context caching can reuse the prefix -> cheaper repeated research).
+# Stable system prompts (constant across calls -> DeepSeek prefix caching).
 _PLAN_SYSTEM = (
     "You are an expert research planner. You output ONLY a JSON array of "
     "search-engine query strings — no prose, no code fences, no explanation."
+)
+_REFINE_SYSTEM = (
+    "You are a research query refiner. Given the question, the queries already "
+    "tried, and a brief summary of findings so far, output ONLY a JSON array of "
+    "NEW search-engine query strings that explore UNCOVERED facets — no prose, "
+    "no code fences."
+)
+_RERANK_SYSTEM = (
+    "You are a relevance extractor. From the provided page content, extract the "
+    "passages most relevant to answering the research question. Return concise, "
+    "faithful excerpts preserving key facts, numbers, and quotes. Do NOT add "
+    "information. If nothing is relevant, return exactly: NO_RELEVANT_CONTENT."
 )
 _SYNTH_SYSTEM = (
     "You are dstools' deep-research analyst, powered by DeepSeek-V4. You write "
@@ -55,6 +76,16 @@ _SYNTH_SYSTEM = (
     "- Write in the same language as the user's question.\n"
     "- End with a '## Key findings' section of 3-6 concise bullet points."
 )
+
+_NO_RELEVANT = "NO_RELEVANT_CONTENT"
+
+
+@dataclass
+class _Fetched:
+    """A search result plus its extracted page text."""
+
+    result: SearchResult
+    text: str  # truncated page text, or snippet fallback
 
 
 async def deep_research_logic(
@@ -88,34 +119,57 @@ async def deep_research_logic(
     total_budget = settings.research_total_chars
 
     await _maybe_await(on_progress, "plan", f"Decomposing question into {breadth} queries")
-    sub_queries = await _plan_queries(llm, query, breadth, settings)
+    queries = await _plan_queries(llm, query, breadth, settings)
 
-    # --- Search -----------------------------------------------------------
-    await _maybe_await(on_progress, "search", f"Searching {len(sub_queries)} queries")
-    all_results: list[SearchResult] = []
-    for _round in range(max(1, depth)):
-        round_results = await _search_concurrent(search, sub_queries, settings.search_max_results)
-        all_results.extend(round_results)
+    fetched: list[_Fetched] = []
+    seen_urls: set[str] = set()
 
-    sources = _dedupe_and_cap(all_results, max_sources)
-    if not sources:
+    for rnd in range(1, depth + 1):
+        await _maybe_await(
+            on_progress, "search", f"Round {rnd}/{depth}: searching {len(queries)} queries"
+        )
+        results = await _search_concurrent(search, queries, settings.search_max_results)
+        new_results = [r for r in _dedupe(results) if r.url not in seen_urls]
+        remaining = max(0, max_sources - len(fetched))
+        new_results = new_results[:remaining]
+        for r in new_results:
+            seen_urls.add(r.url)
+
+        if new_results:
+            await _maybe_await(
+                on_progress, "fetch", f"Round {rnd}: fetching {len(new_results)} pages"
+            )
+            texts = await _fetch_concurrent(fetcher, new_results, per_page)
+            fetched.extend(_Fetched(r, t) for r, t in zip(new_results, texts, strict=True))
+
+        if rnd < depth and fetched:
+            await _maybe_await(
+                on_progress, "refine", f"Refining queries from round {rnd} findings"
+            )
+            queries = await _refine_queries(llm, query, breadth, queries, fetched, settings)
+
+    if not fetched:
         return (
             f"deep_research could not find any web results for: {query!r}. "
             "Try rephrasing, or check that the search provider is reachable."
         )
-    await _maybe_await(on_progress, "search", f"{len(sources)} sources selected")
 
-    # --- Fetch ------------------------------------------------------------
-    await _maybe_await(on_progress, "fetch", f"Fetching {len(sources)} pages")
-    texts = await _fetch_concurrent(fetcher, sources, per_page)
+    fetched = fetched[:max_sources]
 
-    context = _assemble_context(sources, texts, total_budget)
+    await _maybe_await(
+        on_progress, "rerank", f"Extracting relevant passages from {len(fetched)} sources"
+    )
+    excerpts = await _rerank_concurrent(llm, query, fetched, settings)
 
-    # --- Synthesize -------------------------------------------------------
+    context = _assemble_context(fetched, excerpts, total_budget)
+
     await _maybe_await(on_progress, "synthesize", "Writing report with DeepSeek-V4")
     report = await _synthesize(llm, query, context, settings)
 
-    sources_md = "\n".join(f"{i}. [{s.title or s.url}]({s.url})" for i, s in enumerate(sources, 1))
+    sources_md = "\n".join(
+        f"{i}. [{f.result.title or f.result.url}]({f.result.url})"
+        for i, f in enumerate(fetched, 1)
+    )
     await _maybe_await(on_progress, "done", "Report complete")
 
     return f"{report.strip()}\n\n---\n## Sources\n\n{sources_md}\n"
@@ -124,10 +178,14 @@ async def deep_research_logic(
 # --- pipeline steps --------------------------------------------------------
 
 
+def _fast_model(settings: Settings, override: str) -> str:
+    return override or settings.deepseek_fast_model
+
+
 async def _plan_queries(
     llm: DeepSeekClient, query: str, breadth: int, settings: Settings
 ) -> list[str]:
-    """Use V4-flash (non-thinking, JSON mode) to generate search sub-queries."""
+    """V4-flash (non-thinking, JSON mode) -> initial search sub-queries."""
     user = (
         f"Research question: {query}\n\n"
         f"Generate {breadth} diverse, specific web-search queries that together "
@@ -142,30 +200,77 @@ async def _plan_queries(
                 {"role": "system", "content": _PLAN_SYSTEM},
                 {"role": "user", "content": user},
             ],
-            model=settings.deepseek_fast_model,
+            model=_fast_model(settings, settings.research_plan_model),
             thinking="off",
             json_mode=True,
             max_tokens=512,
         )
-        queries = extract_json_list(resp.content) or []
-        queries = [str(q).strip() for q in queries if str(q).strip()]
+        queries = [str(q).strip() for q in (extract_json_list(resp.content) or []) if str(q).strip()]
     except DSToolsError as exc:
         _logger.warning("planning failed (%s); falling back to simple queries", exc)
         queries = []
 
-    if not queries:
-        queries = [query, f"{query} overview", f"{query} latest"]
+    return _stabilise_queries(query, queries, breadth)
 
-    # Always include the original question, dedup, cap to breadth.
-    queries = [query, *[q for q in queries if q != query]]
+
+async def _refine_queries(
+    llm: DeepSeekClient,
+    query: str,
+    breadth: int,
+    prev_queries: list[str],
+    fetched: list[_Fetched],
+    settings: Settings,
+) -> list[str]:
+    """V4-flash (non-thinking, JSON) -> next-round queries from findings so far."""
+    summary = "\n".join(
+        f"- {f.result.title or f.result.url}: {f.result.snippet}".strip()
+        for f in fetched[:12]
+    )
+    tried = "; ".join(prev_queries)
+    user = (
+        f"Research question: {query}\n"
+        f"Queries already tried: {tried}\n"
+        f"Findings so far:\n{summary}\n\n"
+        f"Generate {breadth} NEW search queries targeting facets NOT yet covered. "
+        f"Same language as the question. Output a JSON array of {breadth} strings, "
+        f"nothing else."
+    )
+    try:
+        resp = await llm.complete(
+            messages=[
+                {"role": "system", "content": _REFINE_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            model=_fast_model(settings, settings.research_refine_model),
+            thinking="off",
+            json_mode=True,
+            max_tokens=512,
+        )
+        queries = [str(q).strip() for q in (extract_json_list(resp.content) or []) if str(q).strip()]
+    except DSToolsError as exc:
+        _logger.warning("refine failed (%s); reusing previous queries", exc)
+        queries = list(prev_queries)
+
+    return _stabilise_queries(query, queries, breadth, allow_original=False)
+
+
+def _stabilise_queries(
+    query: str, queries: list[str], breadth: int, *, allow_original: bool = True
+) -> list[str]:
+    """Dedup, optionally prepend the original question, pad/truncate to breadth."""
+    seed = [query] if allow_original else []
+    ordered = seed + [q for q in queries if q]
     seen: set[str] = set()
     unique: list[str] = []
-    for q in queries:
+    for q in ordered:
         key = q.lower()
         if key not in seen:
             seen.add(key)
             unique.append(q)
-    return unique[:breadth] if len(unique) >= breadth else unique + [query] * (breadth - len(unique))
+    if len(unique) >= breadth:
+        return unique[:breadth]
+    padder = query if allow_original else (unique[-1] if unique else query)
+    return unique + [padder] * (breadth - len(unique))
 
 
 async def _search_concurrent(
@@ -185,7 +290,7 @@ async def _search_concurrent(
     return [r for sub in gathered for r in sub]
 
 
-def _dedupe_and_cap(results: list[SearchResult], max_sources: int) -> list[SearchResult]:
+def _dedupe(results: list[SearchResult]) -> list[SearchResult]:
     seen: set[str] = set()
     out: list[SearchResult] = []
     for r in results:
@@ -193,8 +298,6 @@ def _dedupe_and_cap(results: list[SearchResult], max_sources: int) -> list[Searc
             continue
         seen.add(r.url)
         out.append(r)
-        if len(out) >= max_sources:
-            break
     return out
 
 
@@ -217,14 +320,52 @@ async def _fetch_concurrent(
     return results
 
 
+async def _rerank_concurrent(
+    llm: DeepSeekClient, query: str, fetched: list[_Fetched], settings: Settings
+) -> list[str]:
+    """For each source, V4-flash extracts the passages relevant to *query*."""
+    sem = asyncio.Semaphore(4)
+    results: list[str] = [""] * len(fetched)
+    model = _fast_model(settings, settings.research_rerank_model)
+
+    async def one(idx: int, src: _Fetched) -> None:
+        async with sem:
+            text = src.text or src.result.snippet or "(no content retrieved)"
+            user = (
+                f"Research question: {query}\n\n"
+                f"Page content:\n{truncate(text, settings.research_per_page_chars)}\n\n"
+                f"Extract the most relevant passages."
+            )
+            try:
+                resp = await llm.complete(
+                    messages=[
+                        {"role": "system", "content": _RERANK_SYSTEM},
+                        {"role": "user", "content": user},
+                    ],
+                    model=model,
+                    thinking="off",
+                    max_tokens=1024,
+                )
+                results[idx] = resp.content
+            except DSToolsError as exc:
+                _logger.debug("rerank failed for %s: %s", src.result.url, exc)
+                results[idx] = ""  # assemble will fall back to the raw text
+
+    await asyncio.gather(*(one(i, f) for i, f in enumerate(fetched)))
+    return results
+
+
 def _assemble_context(
-    sources: list[SearchResult], texts: list[str], total_budget: int
+    fetched: list[_Fetched], excerpts: list[str], total_budget: int
 ) -> str:
     blocks: list[str] = []
     used = 0
-    for i, (src, text) in enumerate(zip(sources, texts, strict=True), 1):
-        body = (text or src.snippet or "(no content retrieved)").strip()
-        block = f"[{i}] {src.title or src.url}\nURL: {src.url}\n{body}"
+    for i, (src, excerpt) in enumerate(zip(fetched, excerpts, strict=True), 1):
+        exc = excerpt.strip()
+        body = exc if exc and _NO_RELEVANT not in exc else ""
+        if not body:
+            body = (src.text or src.result.snippet or "(no content retrieved)").strip()
+        block = f"[{i}] {src.result.title or src.result.url}\nURL: {src.result.url}\n{body}"
         if used + len(block) > total_budget:
             remaining = total_budget - used
             if remaining > 200:
@@ -238,8 +379,7 @@ def _assemble_context(
 async def _synthesize(
     llm: DeepSeekClient, query: str, context: str, settings: Settings
 ) -> str:
-    # Use the heavy model; thinking defaults to "auto" which the client resolves
-    # from the global setting (enabled unless the user explicitly disabled it).
+    # Heavy model; thinking defaults to "auto" (client resolves from global setting).
     user = (
         f"# Research question\n{query}\n\n"
         f"# Sources (gathered from the web)\n{context}\n\n"
@@ -250,7 +390,7 @@ async def _synthesize(
             {"role": "system", "content": _SYNTH_SYSTEM},
             {"role": "user", "content": user},
         ],
-        model=settings.deepseek_model,
+        model=settings.research_synth_model or settings.deepseek_model,
         reasoning_effort=settings.deepseek_reasoning_effort,
     )
     if not resp.content.strip():
@@ -285,24 +425,28 @@ def register(mcp: FastMCP) -> None:
     ) -> str:
         """Run a multi-step deep-research investigation and return a cited report.
 
-        Decomposes `query` into search queries, searches the web, fetches and reads
-        the top pages, then synthesises a structured markdown report with inline
-        [n] citations and a numbered source list. Ideal for questions needing
-        up-to-date, multi-source synthesis (uses DeepSeek-V4 for planning/synthesis).
+        Pipeline: decompose `query` into search queries -> search the web -> fetch &
+        read pages -> (between rounds) refine queries from findings -> extract the
+        most relevant passages -> synthesise a structured markdown report with inline
+        [n] citations and a numbered source list. Uses DeepSeek-V4 (flash for
+        plan/refine/rerank, pro for synthesis).
 
         Tunables (0 = use defaults from config): `breadth` sub-queries per round
         (default 3), `depth` rounds (default 2), `max_sources` pages read
-        (default 8). Higher values are more thorough but slower/costlier.
-        Requires DEEPSEEK_API_KEY; search/fetch are keyless.
+        (default 8). Higher = more thorough but slower/costlier.
+        Requires DEEPSEEK_API_KEY; search/fetch are keyless (DuckDuckGo).
         """
-        progress_total = 5
+        settings = get_settings()
+        eff_depth = depth or settings.research_depth
+        # Rough total for progress: plan + (search+fetch)*depth + refine*(depth-1)
+        # + rerank + synth + done.
+        total = 1 + eff_depth * 2 + max(0, eff_depth - 1) + 3
+        state = {"n": 0}
 
         async def on_progress(step: str, message: str) -> None:
-            step_index = {"plan": 1, "search": 2, "fetch": 3, "synthesize": 4, "done": 5}.get(
-                step, 0
-            )
+            state["n"] += 1
             await ctx_progress(
-                ctx, progress=step_index, total=progress_total, message=message
+                ctx, progress=state["n"], total=total, message=message
             )
             await ctx_info(ctx, f"deep_research [{step}]: {message}")
 

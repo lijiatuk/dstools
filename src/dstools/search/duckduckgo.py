@@ -1,12 +1,20 @@
 """DuckDuckGo search provider (keyless, HTML endpoint).
 
 Scrapes DuckDuckGo's lightweight HTML endpoint — no API key, works out of the
-box. Two endpoints are tried (HTML then Lite) for robustness against layout
-changes. This is the default :data:`SEARCH_PROVIDER`.
+box. Robustness measures:
+
+* Tries the HTML endpoint, then the Lite endpoint (layout fallback).
+* Filters sponsored/ad results (DuckDuckGo interleaves ``y.js`` ad redirects).
+* Retries with exponential backoff when rate-limited / empty (DuckDuckGo 429s
+  under load) up to ``search_retry_attempts``.
+
+This is the default :data:`SEARCH_PROVIDER`; for heavy/reliable use switch to
+``brave`` or ``tavily``.
 """
 
 from __future__ import annotations
 
+import asyncio
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
@@ -31,11 +39,25 @@ def _decode_result_url(href: object) -> str:
         href = "https:" + href
     parsed = urlparse(href)
     if "duckduckgo.com" in (parsed.netloc or ""):
+        # Sponsored results use a /y.js ad redirect — not a real result.
+        if parsed.path.startswith("/y.js"):
+            return ""
         qs = parse_qs(parsed.query)
         uddg = qs.get("uddg", [""])[0]
         if uddg:
             return unquote(uddg)
     return href
+
+
+def _is_ad_anchor(anchor) -> bool:  # pragma: no cover - defensive secondary filter
+    """True if *anchor* is inside a DuckDuckGo sponsored/ad result block.
+
+    Primary ad filtering is done in :func:`_decode_result_url` (drops ``/y.js``
+    ad redirects); this is a secondary check for ads that reuse the normal
+    redirect.
+    """
+    parent = anchor.find_parent("div", class_="result--ad")
+    return parent is not None
 
 
 def _parse_html(html: str) -> list[SearchResult]:
@@ -44,12 +66,13 @@ def _parse_html(html: str) -> list[SearchResult]:
     seen: set[str] = set()
 
     for anchor in soup.select("a.result__a"):
+        if _is_ad_anchor(anchor):
+            continue
         href = anchor.get("href", "")
         url = _decode_result_url(href)
         if not url or url in seen:
             continue
         title = anchor.get_text(" ", strip=True)
-        # Snippet: sibling result__snippet (DuckDuckGo nests it in a.result__snippet).
         snippet = ""
         snip_node = anchor.find_parent("div", class_="result")
         if snip_node:
@@ -66,7 +89,6 @@ def _parse_lite(html: str) -> list[SearchResult]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[SearchResult] = []
     seen: set[str] = set()
-    # The Lite endpoint lays results out in a table; links land in .result-link.
     for anchor in soup.select("a.result-link"):
         href = anchor.get("href", "")
         url = _decode_result_url(href)
@@ -79,7 +101,7 @@ def _parse_lite(html: str) -> list[SearchResult]:
 
 
 class DuckDuckGoSearchProvider:
-    """Keyless DuckDuckGo search via the HTML/Lite endpoints."""
+    """Keyless DuckDuckGo search via the HTML/Lite endpoints, with retries."""
 
     name = "duckduckgo"
 
@@ -93,35 +115,50 @@ class DuckDuckGoSearchProvider:
             "Accept-Language": "en-US,en;q=0.9",
         }
         timeout = self._settings.search_timeout
-        results: list[SearchResult] = []
+        attempts = max(1, self._settings.search_retry_attempts)
 
         async with httpx.AsyncClient(
             timeout=timeout, follow_redirects=True, headers=headers
         ) as client:
-            # 1) Try the HTML endpoint (POST is more reliable than GET here).
-            try:
-                resp = await client.post(
-                    _HTML_URL, data={"q": query, "b": ""}
-                )
-                if resp.status_code == 200:
-                    results = _parse_html(resp.text)
-            except httpx.HTTPError as exc:
-                _logger.debug("DDG HTML endpoint failed: %s", exc)
+            for attempt in range(attempts):
+                results = await self._try_once(client, query)
+                if results:
+                    _logger.debug(
+                        "DDG search %r -> %d results (attempt %d)",
+                        query,
+                        len(results),
+                        attempt + 1,
+                    )
+                    return results[:max_results]
+                if attempt < attempts - 1:
+                    backoff = 1.5 ** (attempt + 1)
+                    _logger.debug("DDG empty/rate-limited; retrying in %.1fs", backoff)
+                    await asyncio.sleep(backoff)
 
-            # 2) Fall back to the Lite endpoint if HTML returned nothing.
-            if not results:
-                try:
-                    resp = await client.post(_LITE_URL, data={"q": query})
-                    if resp.status_code == 200:
-                        results = _parse_lite(resp.text)
-                except httpx.HTTPError as exc:
-                    _logger.debug("DDG Lite endpoint failed: %s", exc)
+        raise SearchError(
+            f"DuckDuckGo returned no results for: {query!r} after {attempts} attempts "
+            "(likely rate-limited). Set SEARCH_PROVIDER=brave or tavily for reliability."
+        )
 
-        if not results:
-            raise SearchError(
-                f"DuckDuckGo returned no results for: {query!r} "
-                "(the endpoint may be rate-limiting; try again or set SEARCH_PROVIDER=tavily)."
-            )
+    async def _try_once(
+        self, client: httpx.AsyncClient, query: str
+    ) -> list[SearchResult]:
+        # 1) HTML endpoint (POST is more reliable than GET here).
+        try:
+            resp = await client.post(_HTML_URL, data={"q": query, "b": ""})
+            if resp.status_code == 200:
+                results = _parse_html(resp.text)
+                if results:
+                    return results
+        except httpx.HTTPError as exc:
+            _logger.debug("DDG HTML endpoint failed: %s", exc)
 
-        _logger.debug("DDG search %r -> %d results", query, len(results))
-        return results[:max_results]
+        # 2) Lite fallback.
+        try:
+            resp = await client.post(_LITE_URL, data={"q": query})
+            if resp.status_code == 200:
+                return _parse_lite(resp.text)
+        except httpx.HTTPError as exc:
+            _logger.debug("DDG Lite endpoint failed: %s", exc)
+
+        return []

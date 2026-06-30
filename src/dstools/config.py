@@ -50,20 +50,29 @@ class Settings(BaseSettings):
     vision_max_tokens: int = 1024
 
     # --- Web search --------------------------------------------------------
-    search_provider: Literal["duckduckgo", "tavily"] = "duckduckgo"
+    search_provider: Literal["duckduckgo", "tavily", "brave"] = "duckduckgo"
     tavily_api_key: str = ""
+    brave_api_key: str = ""
     search_timeout: float = 20.0
     search_max_results: int = 10
+    # Seconds to back off before retrying a rate-limited keyless search.
+    search_retry_attempts: int = 3
 
     # --- Deep research tuning ----------------------------------------------
     research_breadth: int = Field(default=3, ge=1, le=10)
     research_depth: int = Field(default=2, ge=1, le=5)
     research_max_sources: int = Field(default=8, ge=1, le=30)
     research_fetch_timeout: float = 20.0
-    # Per-page character budget fed to the synthesiser (keeps cost down; V4 has
+    # Per-page character budget fed to the reranker (keeps cost down; V4 has
     # 1M context so this is conservative).
     research_per_page_chars: int = 6000
     research_total_chars: int = 120_000
+    # Per-step model overrides (empty = sensible default: flash for plan/refine/
+    # rerank, pro for synthesis). Lets cost-sensitive users run all-flash.
+    research_plan_model: str = ""
+    research_refine_model: str = ""
+    research_rerank_model: str = ""
+    research_synth_model: str = ""
 
     # --- Server / misc -----------------------------------------------------
     log_level: LogLevel = "INFO"
@@ -88,6 +97,10 @@ class Settings(BaseSettings):
     @property
     def has_tavily(self) -> bool:
         return bool(self.tavily_api_key)
+
+    @property
+    def has_brave(self) -> bool:
+        return bool(self.brave_api_key)
 
 
 @lru_cache(maxsize=1)

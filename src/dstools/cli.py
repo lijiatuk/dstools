@@ -118,12 +118,18 @@ def _doctor() -> int:
     table.add_column("Status")
     table.add_column("Detail", overflow="fold")
 
+    search_key_ok = {
+        "tavily": settings.has_tavily,
+        "brave": settings.has_brave,
+        "duckduckgo": True,
+    }.get(settings.search_provider, False)
+
     rows = [
         (
             "deep_research (LLM brain)",
             "ready" if settings.has_deepseek else "MISSING",
-            f"model={settings.deepseek_model} / fast={settings.deepseek_fast_model} "
-            f"@ {settings.deepseek_base_url}",
+            f"synth={settings.research_synth_model or settings.deepseek_model} / "
+            f"fast={settings.deepseek_fast_model} @ {settings.deepseek_base_url}",
         ),
         (
             "image understanding (vision)",
@@ -133,9 +139,9 @@ def _doctor() -> int:
         ),
         (
             "web search",
-            "ready",
+            "ready" if search_key_ok else "no key",
             f"provider={settings.search_provider}"
-            + (" (key set)" if settings.search_provider == "tavily" and settings.has_tavily else ""),
+            + ("" if search_key_ok else "  (set the provider's _API_KEY)"),
         ),
         (
             "page fetch",
@@ -148,11 +154,39 @@ def _doctor() -> int:
         table.add_row(cap, f"[{style}]{status}[/{style}]", detail)
     _console.print(table)
 
+    if settings.has_deepseek:
+        _console.print(f"\n[dim]deep_research cost (est): {_estimate_cost(settings)}[/dim]")
     _console.print(
-        "\n[dim]Tip: deep_research needs DEEPSEEK_API_KEY; analyze_image needs VISION_*; "
-        "web_search/fetch_page need nothing.[/dim]"
+        "[dim]Tip: deep_research needs DEEPSEEK_API_KEY; analyze_image needs VISION_*; "
+        "web_search/fetch_page need nothing. For reliable search use brave/tavily.[/dim]"
     )
     return 0
+
+
+def _estimate_cost(settings) -> str:
+    """Rough per-research USD estimate from default breadth/depth/max_sources."""
+    breadth = settings.research_breadth
+    depth = settings.research_depth
+    sources = settings.research_max_sources
+    # Light-step calls: plan + refine*(depth-1) + rerank*sources.
+    light_calls = 1 + max(0, depth - 1) + sources
+    light_out_tokens = light_calls * 400
+    # Rerank reads each page (~per_page_chars/3 tokens); plan/refine add ~800.
+    light_in_tokens = sources * (settings.research_per_page_chars // 3) + 800
+    # Synthesis reads the reranked excerpts (~sources*400 tokens) + ~1500 out.
+    synth_in = sources * 400 + 200
+    synth_out = 1500
+    # Pricing per 1M tokens (cache miss).
+    f_in, f_out = 0.14, 0.28  # flash
+    p_in, p_out = 0.435, 0.87  # pro
+    light_cost = (light_in_tokens / 1_000_000) * f_in + (light_out_tokens / 1_000_000) * f_out
+    synth_cost = (synth_in / 1_000_000) * p_in + (synth_out / 1_000_000) * p_out
+    total = light_cost + synth_cost
+    synth_model = settings.research_synth_model or settings.deepseek_model
+    return (
+        f"~${total:.3f} (light={light_calls}x flash, synth=1x {synth_model}; "
+        f"breadth={breadth} depth={depth} max_sources={sources}). Varies with content."
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

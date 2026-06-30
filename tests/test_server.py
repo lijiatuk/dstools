@@ -7,7 +7,6 @@ from dstools.search import SearchResult
 from dstools.server import create_server
 
 from .conftest import make_settings
-from .test_research import FakeSearch
 
 
 def _extract_text(result) -> str:
@@ -77,10 +76,19 @@ async def test_call_deep_research_reports_missing_key(monkeypatch):
 async def test_call_web_search_with_mocked_provider(monkeypatch):
     from dstools.tools import search as smod
 
+    class _StaticSearch:
+        name = "static"
+
+        def __init__(self, results):
+            self._results = results
+
+        async def search(self, query, max_results=10):
+            return list(self._results)
+
     monkeypatch.setattr(
         smod,
         "get_search_provider",
-        lambda: FakeSearch([SearchResult("DeepSeek V4", "https://a.com", "snippet a")]),
+        lambda: _StaticSearch([SearchResult("DeepSeek V4", "https://a.com", "snippet a")]),
     )
     server = create_server()
     result = await server.call_tool("web_search", {"query": "x"})

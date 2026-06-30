@@ -88,12 +88,29 @@ keyless parts (search + fetch) work out of the box.
 | `VISION_BASE_URL` | — | OpenAI-compatible **vision** endpoint (any multimodal model) |
 | `VISION_API_KEY` | — | Key for the vision endpoint |
 | `VISION_MODEL` | — | e.g. `gpt-4o`, `qwen-vl-max`, `glm-4v`, a local `qwen2.5-vl` via Ollama |
-| `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo` (keyless) / `tavily` |
+| `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo` (keyless) / `brave` / `tavily` |
 | `TAVILY_API_KEY` | — | Required if `SEARCH_PROVIDER=tavily` |
+| `BRAVE_API_KEY` | — | Required if `SEARCH_PROVIDER=brave` (free 2k/mo, more reliable) |
+| `SEARCH_RETRY_ATTEMPTS` | `3` | Retries with backoff when keyless DDG rate-limits |
 | `RESEARCH_BREADTH` | `3` | Sub-queries generated per round |
-| `RESEARCH_DEPTH` | `2` | Research rounds |
-| `RESEARCH_MAX_SOURCES` | `8` | Pages fetched & synthesised |
+| `RESEARCH_DEPTH` | `2` | Research rounds (rounds >1 trigger query refinement) |
+| `RESEARCH_MAX_SOURCES` | `8` | Pages fetched, reranked & synthesised |
+| `RESEARCH_{PLAN,REFINE,RERANK,SYNTH}_MODEL` | `""` | Per-step model override (empty = flash for light steps, pro for synth) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
+
+### deep_research pipeline (v0.2)
+
+`deep_research` is a smart, multi-round pipeline (DeepSeek-V4 as the brain):
+
+1. **Plan** (V4-flash, JSON) → `breadth` search queries.
+2. **Round loop** (`depth` rounds): search → fetch → **refine** — V4-flash reads
+   findings-so-far and generates next-round queries for uncovered facets.
+3. **Rerank** — V4-flash extracts the passages most relevant to the question from
+   each page (always-on; quality over raw stuffing).
+4. **Synthesize** (V4-pro + thinking) → cited markdown report.
+
+Per-step models are tunable; set all `RESEARCH_*_MODEL` to `deepseek-v4-flash`
+for the cheapest runs. `dstools doctor` prints a per-research cost estimate.
 
 ### Vision providers (for `analyze_image`)
 
