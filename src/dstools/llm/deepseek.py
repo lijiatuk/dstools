@@ -103,6 +103,10 @@ class DeepSeekClient:
         use_thinking = self._resolve_thinking(thinking)
         effort = reasoning_effort or self._settings.deepseek_reasoning_effort
         model = model or self._settings.deepseek_model
+        # Fall back to the configured default temperature (e.g. LLM_TEMPERATURE=0).
+        temperature = (
+            temperature if temperature is not None else self._settings.deepseek_temperature
+        )
 
         kwargs: dict[str, Any] = {
             "model": model,

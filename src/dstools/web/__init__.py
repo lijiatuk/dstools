@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from .fetcher import PageData, PageFetcher
+from .fetcher import Fetcher, PageData, PageFetcher
 
-__all__ = ["PageData", "PageFetcher"]
+__all__ = ["Fetcher", "PageData", "PageFetcher"]

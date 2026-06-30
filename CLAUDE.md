@@ -41,18 +41,20 @@ uv run python examples/mcp_client_demo.py   # end-to-end stdio smoke test
 ## Architecture
 
 - `server.py` — `FastMCP` instance + tool registration (`create_server()`).
-- `cli.py` — `dstools` CLI (serve / inspect / doctor / version).
-- `config.py` — `Settings` (pydantic-settings, env + `.env`).
-- `runtime.py` — lazy singletons for clients/providers (no MCP lifespan).
+- `cli.py` — `dstools` CLI (serve / inspect / doctor / cache / version).
+- `config.py` — `Settings` (pydantic-settings, env + `.env`). DeepSeek fields also
+  accept the generic `LLM_*` aliases (`LLM_API_KEY`/`LLM_BASE_URL`/`LLM_MODEL`/...).
+- `runtime.py` — lazy singletons; wraps search/fetcher in the cache when enabled.
+- `cache.py` — opt-in on-disk retrieval cache (`RetrievalCache` + caching wrappers).
 - `llm/` — `DeepSeekClient` (V4-aware) + `VisionClient` (pluggable multimodal).
-- `search/` — providers: `DuckDuckGoSearchProvider` (keyless, default) +
-  `TavilySearchProvider` (optional).
-- `web/fetcher.py` — async page fetch (streamed, size-capped) + HTML→Markdown.
-- `tools/` — each module has **logic functions** (testable, dependency-injected)
-  + a `register(mcp)` thin wrapper that adds `ctx` logging/progress and error
-  handling. `_ctx.py` makes ctx calls defensive (never crash on missing session).
-- `utils/` — image I/O (path/URL/data-uri/base64 → validated `ImageData`) and
-  text helpers (chunking, truncation, JSON extraction).
+- `search/` — providers: `DuckDuckGoSearchProvider` (keyless default, ad-filtered,
+  retry/backoff) + `BraveSearchProvider` + `TavilySearchProvider` (both keyed).
+- `web/fetcher.py` — async page fetch (streamed, size-capped) + HTML→Markdown;
+  defines the `Fetcher` Protocol satisfied by `PageFetcher` and the cache wrapper.
+- `tools/` — logic functions (testable, DI) + `register(mcp)` wrappers; `deep_research`
+  = plan → round loop (search/fetch/**refine**) → **rerank** → synthesize.
+  `_ctx.py` makes ctx calls defensive (never crash on missing session).
+- `utils/` — image I/O + text helpers.
 
 ## Adding a tool
 

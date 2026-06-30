@@ -1,5 +1,10 @@
 # dstools — DeepSeek-V4 MCP Toolkit
 
+[![CI](https://github.com/lijiatuk/dstools/actions/workflows/ci.yml/badge.svg)](https://github.com/lijiatuk/dstools/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/dstools.svg)](https://pypi.org/project/dstools/)
+[![Python](https://img.shields.io/pypi/pyversions/dstools.svg)](https://pypi.org/project/dstools/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > Give **DeepSeek-V4** models eyes and a research desk.
 >
 > An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that augments
@@ -71,6 +76,19 @@ claude mcp add --transport stdio dstools -- uv run --directory /path/to/dstools 
 ```
 
 A ready-made `examples/claude_desktop_config.json` is included for Claude Desktop.
+
+## Docker
+
+Run the server over Streamable HTTP in a container:
+
+```bash
+docker build -t dstools .
+docker run --rm -p 8000:8000 \
+  -e DEEPSEEK_API_KEY=sk-... \
+  -e VISION_BASE_URL=... -e VISION_API_KEY=... -e VISION_MODEL=... \
+  dstools
+# → http://localhost:8000/mcp
+```
 
 ## Configuration
 

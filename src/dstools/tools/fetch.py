@@ -10,7 +10,7 @@ from ..config import Settings, get_settings
 from ..exceptions import DSToolsError
 from ..logging_setup import get_logger
 from ..runtime import get_fetcher
-from ..web.fetcher import PageFetcher
+from ..web.fetcher import Fetcher
 from ._ctx import ctx_info
 
 _logger = get_logger("tools.fetch")
@@ -21,7 +21,7 @@ async def fetch_page_logic(
     *,
     max_chars: int = 20_000,
     settings: Settings | None = None,
-    fetcher: PageFetcher | None = None,
+    fetcher: Fetcher | None = None,
 ) -> str:
     """Fetch *url* and return its main content as Markdown."""
     settings = settings or get_settings()

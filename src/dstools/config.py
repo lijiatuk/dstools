@@ -13,7 +13,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -27,19 +27,39 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     # --- DeepSeek (the LLM brain; OpenAI-compatible API) -------------------
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
+    # Each field also accepts the generic LLM_* alias (LLM_API_KEY, LLM_BASE_URL,
+    # LLM_MODEL, LLM_FAST_MODEL, LLM_TIMEOUT, LLM_TEMPERATURE) so users with a
+    # provider-agnostic config can use dstools unchanged. DEEPSEEK_* wins if both set.
+    deepseek_api_key: str = Field(
+        default="", validation_alias=AliasChoices("DEEPSEEK_API_KEY", "LLM_API_KEY")
+    )
+    deepseek_base_url: str = Field(
+        default="https://api.deepseek.com",
+        validation_alias=AliasChoices("DEEPSEEK_BASE_URL", "LLM_BASE_URL"),
+    )
     # DeepSeek-V4 models. (deepseek-chat / deepseek-reasoner are deprecated
     # 2026-07-24 and map to v4-flash non-thinking / thinking respectively.)
-    deepseek_model: str = "deepseek-v4-pro"
-    deepseek_fast_model: str = "deepseek-v4-flash"
+    deepseek_model: str = Field(
+        default="deepseek-v4-pro", validation_alias=AliasChoices("DEEPSEEK_MODEL", "LLM_MODEL")
+    )
+    deepseek_fast_model: str = Field(
+        default="deepseek-v4-flash",
+        validation_alias=AliasChoices("DEEPSEEK_FAST_MODEL", "LLM_FAST_MODEL"),
+    )
     # V4 thinking mode for *hard* steps (planning, synthesis): auto | on | off.
     deepseek_thinking: Literal["auto", "on", "off"] = "auto"
     deepseek_reasoning_effort: Literal["low", "medium", "high", "max", "xhigh"] = "high"
-    deepseek_timeout: float = 120.0
+    deepseek_timeout: float = Field(
+        default=120.0, validation_alias=AliasChoices("DEEPSEEK_TIMEOUT", "LLM_TIMEOUT")
+    )
+    # Default sampling temperature for non-thinking steps (ignored in thinking mode).
+    deepseek_temperature: float | None = Field(
+        default=None, validation_alias=AliasChoices("DEEPSEEK_TEMPERATURE", "LLM_TEMPERATURE")
+    )
 
     # --- Vision provider (any OpenAI-compatible multimodal endpoint) --------
     # Required for analyze_image. DeepSeek-V4 cannot see images natively.
@@ -73,6 +93,11 @@ class Settings(BaseSettings):
     research_refine_model: str = ""
     research_rerank_model: str = ""
     research_synth_model: str = ""
+    # Opt-in on-disk retrieval cache (search results + page markdown). LLM
+    # responses are never cached. Disabled by default for privacy/freshness.
+    research_cache_enabled: bool = False
+    research_cache_dir: str = "~/.dstools_cache"
+    research_cache_ttl: int = 86_400  # seconds; 24h
 
     # --- Server / misc -----------------------------------------------------
     log_level: LogLevel = "INFO"

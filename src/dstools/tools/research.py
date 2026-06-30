@@ -38,7 +38,7 @@ from ..logging_setup import get_logger
 from ..runtime import get_deepseek_client, get_fetcher, get_search_provider
 from ..search import SearchProvider, SearchResult
 from ..utils.text import extract_json_list, truncate
-from ..web.fetcher import PageFetcher
+from ..web.fetcher import Fetcher
 from ._ctx import ctx_info, ctx_progress
 
 _logger = get_logger("tools.research")
@@ -97,7 +97,7 @@ async def deep_research_logic(
     settings: Settings | None = None,
     llm: DeepSeekClient | None = None,
     search: SearchProvider | None = None,
-    fetcher: PageFetcher | None = None,
+    fetcher: Fetcher | None = None,
     on_progress: ProgressFn | None = None,
 ) -> str:
     """Run the full research pipeline and return a cited markdown report."""
@@ -302,7 +302,7 @@ def _dedupe(results: list[SearchResult]) -> list[SearchResult]:
 
 
 async def _fetch_concurrent(
-    fetcher: PageFetcher, sources: list[SearchResult], per_page_chars: int
+    fetcher: Fetcher, sources: list[SearchResult], per_page_chars: int
 ) -> list[str]:
     sem = asyncio.Semaphore(5)
     results: list[str] = [""] * len(sources)

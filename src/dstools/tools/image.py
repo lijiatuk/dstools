@@ -98,42 +98,91 @@ async def ocr_image_logic(
 
 def _format_vision_result(img: ImageData, question: str, desc: str) -> str:
     return (
-        f"**Image analysis** — {img.width}x{img.height} {img.mime} "
-        f"({img.source_kind})\n\n"
+        f"**Image analysis** — {_image_facts(img)}\n\n"
         f"Question: {question}\n\n{desc.strip()}"
     )
 
 
 def _format_fallback(img: ImageData, question: str) -> str:
     ocr_text = _try_local_ocr(img)
-    parts = [
-        f"**Image metadata** — {img.width}x{img.height} {img.mime} "
-        f"({img.source_kind}); {len(img.data)} bytes",
-    ]
+    parts = [f"**Image metadata** — {_image_facts(img)}"]
     if ocr_text.strip():
         parts.append(f"\n**Extracted text (OCR):**\n{ocr_text.strip()}")
     parts.append(
         "\n**Note:** No vision provider (VISION_*) is configured, so a full visual "
-        "description is unavailable. Configure one to enable rich image understanding. "
+        "description is unavailable. Configure one, or `pip install dstools[ocr]` for "
+        "text extraction, to enable richer image understanding. "
         "Requested question was: " + question
     )
     return "\n".join(parts)
 
 
-def _try_local_ocr(img: ImageData, *, lang: str = "eng") -> str:
-    """Run Tesseract OCR if available; return '' if not installed or no text."""
-    try:
-        import pytesseract
-        from PIL import Image  # noqa: F401  (ensures PIL available)
-    except ImportError:
-        return ""
+def _image_facts(img: ImageData) -> str:
+    """One-line factual metadata: dimensions, format, size, aspect ratio, avg color."""
+    ar = round(img.width / img.height, 2) if img.height else 0
+    facts = (
+        f"{img.width}x{img.height} {img.mime} ({img.source_kind}); "
+        f"{len(img.data)} bytes; aspect={ar}"
+    )
+    color = _avg_color(img)
+    if color:
+        facts += f"; avg_color={color}"
+    return facts
+
+
+def _avg_color(img: ImageData) -> str:
+    """Hex of the image's average colour (cheap, via 1x1 downscale)."""
     try:
         from PIL import Image as _PILImage
 
+        pil = _PILImage.open(BytesIO(img.data)).convert("RGB").resize((1, 1))
+        pixel = pil.getpixel((0, 0))
+        if not isinstance(pixel, (tuple, list)) or len(pixel) < 3:
+            return ""
+        r, g, b = (int(c) for c in pixel[:3])
+        return f"#{r:02x}{g:02x}{b:02x}"
+    except Exception as exc:  # pragma: no cover - environment dependent
+        _logger.debug("avg_color failed: %s", exc)
+        return ""
+
+
+def _try_local_ocr(img: ImageData, *, lang: str = "eng") -> str:
+    """Local OCR without a vision API. Prefers rapidocr (pip-installable, no
+    system binary); falls back to pytesseract (needs the Tesseract binary).
+
+    Returns the recognised text, or "" if no backend is available / no text found.
+    """
+    # 1. rapidocr-onnxruntime — recommended, `pip install dstools[ocr]`.
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        pass
+    else:
+        try:
+            engine = RapidOCR()
+            result, _elapse = engine(img.data)
+            if isinstance(result, list):
+                lines = [
+                    item[1]
+                    for item in result
+                    if isinstance(item, (list, tuple)) and len(item) > 1 and item[1]
+                ]
+                return "\n".join(lines)
+            return ""
+        except Exception as exc:  # pragma: no cover - environment dependent
+            _logger.debug("rapidocr failed: %s", exc)
+
+    # 2. pytesseract — legacy, needs the system Tesseract binary.
+    try:
+        import pytesseract
+        from PIL import Image as _PILImage
+    except ImportError:
+        return ""
+    try:
         pil = _PILImage.open(BytesIO(img.data))
         return pytesseract.image_to_string(pil, lang=lang)
     except Exception as exc:  # pragma: no cover - environment dependent
-        _logger.debug("local OCR failed: %s", exc)
+        _logger.debug("tesseract OCR failed: %s", exc)
         return ""
 
 

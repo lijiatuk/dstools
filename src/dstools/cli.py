@@ -50,6 +50,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("inspect", help="List registered tools and their input schemas.")
     sub.add_parser("doctor", help="Check configuration and which capabilities are ready.")
+    cache = sub.add_parser("cache", help="Show stats for (or clear) the retrieval cache.")
+    cache.add_argument("--clear", action="store_true", help="Delete all cached entries.")
     sub.add_parser("version", help="Print the version and exit.")
 
     return parser
@@ -69,6 +71,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _inspect()
     if command == "doctor":
         return _doctor()
+    if command == "cache":
+        return _cache(args)
     parser.print_help()
     return 1
 
@@ -148,6 +152,11 @@ def _doctor() -> int:
             "ready",
             "keyless (direct HTTP + readability)",
         ),
+        (
+            "retrieval cache",
+            "on" if settings.research_cache_enabled else "off",
+            f"dir={settings.research_cache_dir} ttl={settings.research_cache_ttl}s",
+        ),
     ]
     for cap, status, detail in rows:
         style = "green" if status == "ready" else ("red" if "MISSING" in status else "yellow")
@@ -187,6 +196,28 @@ def _estimate_cost(settings) -> str:
         f"~${total:.3f} (light={light_calls}x flash, synth=1x {synth_model}; "
         f"breadth={breadth} depth={depth} max_sources={sources}). Varies with content."
     )
+
+
+def _cache(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    if not settings.research_cache_enabled:
+        _console.print("[yellow]Cache is disabled[/yellow] (RESEARCH_CACHE_ENABLED=false).")
+        _console.print("[dim]Enable to cache search results + page markdown (LLM never cached).[/dim]")
+        return 0
+    from .cache import build_cache
+
+    cache = build_cache(settings)
+    if cache is None:  # pragma: no cover - guarded above
+        return 1
+    if args.clear:
+        removed = cache.clear()
+        _console.print(f"Cleared {removed} cached entries from {cache.stats()['dir']}.")
+        return 0
+    stats = cache.stats()
+    _console.print(f"Cache dir:  {stats['dir']}")
+    _console.print(f"Entries:    {stats['entries']}")
+    _console.print(f"Size:       {stats['size_bytes']} bytes")
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover

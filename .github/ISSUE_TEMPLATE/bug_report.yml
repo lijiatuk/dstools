@@ -1,0 +1,31 @@
+name: Bug report
+description: Report something that isn't working as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Steps to reproduce + expected vs actual behaviour.
+      placeholder: "uv run dstools serve ... then called tool X with ..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: dstools version
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.13"
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (redact secrets)
+      description: "SEARCH_PROVIDER, models, transport, etc. Never paste API keys."
+    validations:
+      required: false

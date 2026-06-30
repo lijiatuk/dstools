@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import httpx
 from bs4 import BeautifulSoup
@@ -50,6 +51,16 @@ class PageData:
         header = f"# {self.title}\nSource: {self.final_url}\n"
         body = truncate(self.text, max_chars)
         return header + body
+
+
+class Fetcher(Protocol):
+    """Async page-fetcher interface (``PageFetcher`` and the caching wrapper both satisfy).
+
+    Only :meth:`fetch` is required; ``fetch_markdown`` is a convenience on the
+    concrete classes.
+    """
+
+    async def fetch(self, url: str, *, max_chars: int = 20_000) -> PageData: ...
 
 
 class PageFetcher:

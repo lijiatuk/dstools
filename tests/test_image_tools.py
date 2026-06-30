@@ -60,3 +60,18 @@ async def test_ocr_image_no_backend(png_bytes, tmp_path):
     settings = make_settings()
     out = await ocr_image_logic(str(path), settings=settings, vision=VisionClient(settings))
     assert "No OCR" in out or "vision provider" in out
+
+
+def test_image_facts_includes_aspect_and_color(png_bytes):
+    import asyncio
+    import base64
+
+    from dstools.tools.image import _image_facts
+    from dstools.utils.images import load_image
+
+    b64 = base64.b64encode(png_bytes).decode()
+    img = asyncio.run(load_image(b64, user_agent="t"))
+    facts = _image_facts(img)
+    assert "aspect=1.5" in facts  # 60x40
+    assert "avg_color=#" in facts  # solid green -> deterministic hex
+    assert "image/png" in facts

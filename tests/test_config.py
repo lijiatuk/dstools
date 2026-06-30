@@ -41,3 +41,34 @@ def test_env_overrides(monkeypatch):
     assert s.deepseek_model == "deepseek-v4-flash"
     assert s.research_breadth == 7
     assert s.has_deepseek
+
+
+def test_llm_alias_env(monkeypatch):
+    # The generic LLM_* aliases should populate the DeepSeek fields.
+    for k in list(__import__("os").environ):
+        if k.startswith("DEEPSEEK_") or k.startswith("LLM_"):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-v4-flash")
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("LLM_TEMPERATURE", "0")
+    from dstools.config import reload_settings
+
+    s = reload_settings()
+    assert s.deepseek_api_key == "llm-key"
+    assert s.deepseek_model == "deepseek-v4-flash"
+    assert s.deepseek_base_url == "https://api.deepseek.com"
+    assert s.deepseek_temperature == 0.0
+    assert s.has_deepseek
+
+
+def test_deepseek_alias_wins_over_llm(monkeypatch):
+    for k in list(__import__("os").environ):
+        if k.startswith("DEEPSEEK_") or k.startswith("LLM_"):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-key")  # takes precedence
+    from dstools.config import reload_settings
+
+    s = reload_settings()
+    assert s.deepseek_api_key == "ds-key"
